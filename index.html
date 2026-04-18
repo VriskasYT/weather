@@ -863,7 +863,7 @@ function getInfoBanner(type, data = {}) {
             badge: 'Сводка',
             title: 'Кратко по погоде',
             desc: `Сейчас ${Math.round(data.temp ?? 0)}°, ощущается как ${Math.round(data.feels ?? 0)}°. ${data.desc || 'Погодные условия обновлены'}.`,
-            meta: `Влажность ${data.humidity ?? 0}% · ветер ${data.wind ?? 0} м/с${data.consensusCount ? ` · консенсус ${data.consensusCount} моделей` : ''}`
+            meta: `Влажность ${fmtNum(data.humidity)}% · ветер ${fmtNum(data.wind, 1)} м/с${data.consensusCount ? ` · консенсус ${data.consensusCount} моделей` : ''}`
         },
         map: {
             icon: 'radar',
@@ -895,7 +895,7 @@ function buildWeatherTip(cur, daily) {
     const rainToday = daily?.precipitation_probability_max?.[0] ?? 0;
     if (rainToday >= 60) return {
         tip: 'Высока вероятность осадков — лучше взять зонт или дождевик.',
-        meta: `Вероятность осадков до ${rainToday}%`
+        meta: `Вероятность осадков до ${fmtNum(rainToday)}%`
     };
     if ((cur.wind_speed_10m ?? 0) >= 10) return {
         tip: 'На улице ветрено — пригодится плотная куртка или верхний слой.',
@@ -907,7 +907,7 @@ function buildWeatherTip(cur, daily) {
     };
     if ((daily?.uv_index_max?.[0] ?? 0) >= 6) return {
         tip: 'Солнце активное — очки и SPF сегодня точно не будут лишними.',
-        meta: `UV индекс до ${daily.uv_index_max[0]}`
+        meta: `UV индекс до ${fmtNum(daily.uv_index_max[0], 1)}`
     };
     return {
         tip: 'Погода комфортная — отличный день для прогулки без лишней экипировки.',
@@ -1075,6 +1075,25 @@ function windDir(deg) {
     return ['С','СВ','В','ЮВ','Ю','ЮЗ','З','СЗ'][Math.round(deg / 45) % 8];
 }
 function fmtTime(iso) { return iso ? iso.slice(11, 16) : '--:--'; }
+function fmtNum(value, digits = 0, fallback = '—') {
+    const n = numOrNull(value);
+    if (n === null) return fallback;
+    if (digits <= 0) return String(Math.round(n));
+    return n.toFixed(digits)
+        .replace(/\.0+$/, '')
+        .replace(/(\.\d*[1-9])0+$/, '$1');
+}
+function extractIpLocation(data = {}) {
+    const latitude = numOrNull(data.latitude ?? data.lat);
+    const longitude = numOrNull(data.longitude ?? data.lon);
+    if (latitude === null || longitude === null) return null;
+    return {
+        latitude,
+        longitude,
+        city: data.city || data.regionName || data.region || data.district || '',
+        country: data.country_name || data.country || data.countryCode || ''
+    };
+}
 function escapeHtml(str) {
     return String(str ?? '')
         .replaceAll('&', '&amp;')
@@ -1254,16 +1273,23 @@ async function initLocation() {
             try {
                 const controller = new AbortController();
                 const timeoutId = setTimeout(() => controller.abort(), 3000);
-                const r = await fetch(apiUrl, { signal: controller.signal });
+                const r = await fetch(apiUrl, {
+                    signal: controller.signal,
+                    headers: { 'Accept': 'application/json' }
+                });
                 clearTimeout(timeoutId);
+                if (!r.ok) continue;
                 const d = await r.json();
-                if (d.latitude && d.longitude) {
-                    LAT = d.latitude; LON = d.longitude;
+                const ipLocation = extractIpLocation(d);
+                if (ipLocation) {
+                    LAT = ipLocation.latitude;
+                    LON = ipLocation.longitude;
                     gotIP = true;
-                    const cityName = d.city || d.region || '';
-                    const country = d.country_name || d.country || '';
-                    snack(`📍 Определено по IP: ${cityName}`);
-                    fetchWeather(cityName + (country ? ', ' + country : ''));
+                    const cityName = ipLocation.city || '';
+                    const country = ipLocation.country || '';
+                    const label = [cityName, country].filter(Boolean).join(', ');
+                    if (cityName) snack(`📍 Определено по IP: ${cityName}`);
+                    fetchWeather(label || undefined);
                     break;
                 }
             } catch(e) {}
@@ -1280,9 +1306,19 @@ function tryGPS(silent) {
         return;
     }
     navigator.geolocation.getCurrentPosition(
-        p => { LAT = p.coords.latitude; LON = p.coords.longitude; if (silent) snack('📍 Уточнено по GPS'); fetchWeather(); },
-        err => { if (!silent) { snack('Геолокация недоступна — Москва'); fetchCity('Москва'); } },
-        { timeout: 8000, enableHighAccuracy: false }
+        p => {
+            LAT = p.coords.latitude;
+            LON = p.coords.longitude;
+            if (silent) snack('📍 Уточнено по GPS');
+            fetchWeather();
+        },
+        err => {
+            if (!silent) {
+                snack('Геолокация недоступна — Москва');
+                fetchCity('Москва');
+            }
+        },
+        { timeout: 10000, enableHighAccuracy: true, maximumAge: 300000 }
     );
 }
 
@@ -1429,17 +1465,17 @@ function render(data, city) {
         </div>
     </div>
 
-    ${getInfoBanner('summary', { temp: cur.temperature_2m, feels: cur.apparent_temperature, desc: wmo.desc, humidity: cur.relative_humidity_2m, wind: cur.wind_speed_10m.toFixed(1), consensusCount: data._consensus?.sourceCount })}
+    ${getInfoBanner('summary', { temp: cur.temperature_2m, feels: cur.apparent_temperature, desc: wmo.desc, humidity: cur.relative_humidity_2m, wind: cur.wind_speed_10m, consensusCount: data._consensus?.sourceCount })}
 
     <div class="stats reveal d2">
         <div class="stat">
             <div class="stat-ic"><span class="material-symbols-rounded">water_drop</span></div>
-            <div class="stat-v">${cur.relative_humidity_2m}%</div>
+            <div class="stat-v">${fmtNum(cur.relative_humidity_2m)}%</div>
             <div class="stat-l">Влажность</div>
         </div>
         <div class="stat">
             <div class="stat-ic"><span class="material-symbols-rounded">air</span></div>
-            <div class="stat-v">${cur.wind_speed_10m.toFixed(1)}</div>
+            <div class="stat-v">${fmtNum(cur.wind_speed_10m, 1)}</div>
             <div class="stat-l">Ветер м/с ${windDir(cur.wind_direction_10m)}</div>
         </div>
         <div class="stat">
@@ -1449,17 +1485,17 @@ function render(data, city) {
         </div>
         <div class="stat">
             <div class="stat-ic"><span class="material-symbols-rounded">cloud</span></div>
-            <div class="stat-v">${cur.cloud_cover}%</div>
+            <div class="stat-v">${fmtNum(cur.cloud_cover)}%</div>
             <div class="stat-l">Облачность</div>
         </div>
         <div class="stat">
             <div class="stat-ic"><span class="material-symbols-rounded">storm</span></div>
-            <div class="stat-v">${cur.wind_gusts_10m.toFixed(1)}</div>
+            <div class="stat-v">${fmtNum(cur.wind_gusts_10m, 1)}</div>
             <div class="stat-l">Порывы м/с</div>
         </div>
         <div class="stat">
             <div class="stat-ic"><span class="material-symbols-rounded" style="color:${uvColor}">wb_sunny</span></div>
-            <div class="stat-v" style="color:${uvColor}">${uvMax}</div>
+            <div class="stat-v" style="color:${uvColor}">${fmtNum(uvMax, 1)}</div>
             <div class="stat-l">UV ${uvLabel}</div>
         </div>
     </div>
@@ -1475,7 +1511,7 @@ function render(data, city) {
                     <div class="h-time">${i === 0 ? 'Сейчас' : hrs}</div>
                     <span class="material-symbols-rounded h-ic">${w.icon}</span>
                     <div class="h-temp">${Math.round(h.temp)}°</div>
-                    ${h.precip > 0 ? `<div class="h-rain">💧${h.precip}%</div>` : ''}
+                    ${h.precip > 0 ? `<div class="h-rain">💧${fmtNum(h.precip)}%</div>` : ''}
                 </div>`;
             }).join('')}
         </div>
@@ -1538,7 +1574,7 @@ function render(data, city) {
                         const h = Math.max((p / maxP) * 64, 3);
                         const d = new Date(dy.time[i]);
                         return `<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:2px">
-                            <div style="font-size:9px;font-weight:700;color:var(--md-on-surface-variant)">${p > 0 ? p.toFixed(1) : ''}</div>
+                            <div style="font-size:9px;font-weight:700;color:var(--md-on-surface-variant)">${p > 0 ? fmtNum(p, 1) : ''}</div>
                             <div class="precip-bar" style="width:100%;height:${h}px;background:var(--md-tertiary-container);border-radius:4px 4px 0 0"></div>
                             <div style="font-size:9px;font-weight:600;color:var(--md-on-surface-variant)">${dayNames[d.getDay()]}</div>
                         </div>`;
